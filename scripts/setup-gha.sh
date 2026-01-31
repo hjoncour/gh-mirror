@@ -63,6 +63,31 @@ detect_glab_host() {
   printf '%s\n' "gitlab.com"
 }
 
+# Check if GitLab project exists using the API
+# Returns 0 if exists, 1 if not
+check_gitlab_project_exists() {
+  local gitlab_repo="$1"
+  local token="${GITLAB_TOKEN:-}"
+
+  # Extract host and path from normalized repo (e.g., gitlab.com/user/repo.git)
+  local host path
+  host="${gitlab_repo%%/*}"
+  path="${gitlab_repo#*/}"
+  path="${path%.git}"
+
+  # URL-encode the path (replace / with %2F)
+  local encoded_path="${path//\//%2F}"
+
+  local api_url="https://${host}/api/v4/projects/${encoded_path}"
+
+  if [[ -n "$token" ]]; then
+    curl -fsSL --header "PRIVATE-TOKEN: ${token}" "$api_url" >/dev/null 2>&1
+  else
+    # Try without auth (works for public projects)
+    curl -fsSL "$api_url" >/dev/null 2>&1
+  fi
+}
+
 determine_default_branch() {
   local branch
   if branch="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"; then
@@ -117,14 +142,39 @@ echo "Configure GitHub Actions workflow to mirror default branch to GitLab."
 default_branch="$(determine_default_branch)"
 gitlab_repo=""
 
-# In auto mode, use provided GITLAB_REPO or skip interactive prompts
-if [[ "$AUTO_MODE" == "true" ]]; then
-  if [[ -n "$GITLAB_REPO" ]]; then
-    gitlab_repo="$(normalize_gitlab_repo "$GITLAB_REPO")"
-    echo "Using GitLab repository: $gitlab_repo"
+# Check if GITLAB_REPO is already set (from configure-gh-env.sh or environment)
+if [[ -n "$GITLAB_REPO" ]]; then
+  gitlab_repo="$(normalize_gitlab_repo "$GITLAB_REPO")"
+  echo "Checking GitLab repository: $gitlab_repo"
+
+  if check_gitlab_project_exists "$gitlab_repo"; then
+    echo "GitLab project exists."
   else
-    echo "Note: GITLAB_REPO not provided; workflow will use vars.GITLAB_REPO from GitHub Actions."
+    echo "GitLab project does not exist yet."
+    if [[ "$AUTO_MODE" == "true" ]]; then
+      echo "Run 'ghmirror gitlab-setup' first to create the project, or create it manually."
+    elif ask_yes_no "Would you like to create it now"; then
+      # Try to create via API using setup-gitlab-project.sh logic
+      SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+      if [[ -x "$SCRIPT_DIR/setup-gitlab-project.sh" ]]; then
+        bash "$SCRIPT_DIR/setup-gitlab-project.sh" --auto
+      elif command -v glab >/dev/null 2>&1; then
+        require_glab
+        gitlab_host="$(detect_glab_host)"
+        # Extract path from normalized repo
+        gitlab_project_path="${gitlab_repo#*/}"
+        gitlab_project_path="${gitlab_project_path%.git}"
+        echo "Creating GitLab project via glab..."
+        glab project create "$gitlab_project_path" --visibility private --default-branch "$default_branch" || {
+          echo "Failed to create project. Create it manually at: https://${gitlab_repo%.git}" >&2
+        }
+      else
+        echo "Create the project manually at: https://${gitlab_repo%.git}"
+      fi
+    fi
   fi
+elif [[ "$AUTO_MODE" == "true" ]]; then
+  echo "Note: GITLAB_REPO not provided; workflow will use vars.GITLAB_REPO from GitHub Actions."
 elif ask_yes_no "Do you already have a target GitLab repository"; then
   read -r -p "Enter GitLab repository (gitlab.com/<namespace>/<repo>[.git] or https URL): " gitlab_repo_input
   gitlab_repo="$(normalize_gitlab_repo "$gitlab_repo_input")"

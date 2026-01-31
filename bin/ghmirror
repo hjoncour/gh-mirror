@@ -180,12 +180,13 @@ run_gitlab_setup() {
 
 run_workflow() {
   echo "=== GitHub Actions workflow setup ==="
+  # Pass GITLAB_REPO so workflow script doesn't ask again
+  local repo="${GITLAB_REPO:-${GITLAB_HOST}/${GITLAB_NAMESPACE:-$GITHUB_OWNER}/${GITHUB_REPO_NAME}.git}"
   if [[ "$AUTO_MODE" == "true" ]]; then
-    AUTO_MODE=true FEATURE_POLICY=always \
-      GITLAB_REPO="${GITLAB_HOST}/${GITLAB_NAMESPACE:-$GITHUB_OWNER}/${GITHUB_REPO_NAME}.git" \
+    AUTO_MODE=true FEATURE_POLICY=always GITLAB_REPO="$repo" \
       bash "$WORKFLOW_SCRIPT" --auto
   else
-    bash "$WORKFLOW_SCRIPT"
+    GITLAB_REPO="$repo" bash "$WORKFLOW_SCRIPT"
   fi
 }
 
