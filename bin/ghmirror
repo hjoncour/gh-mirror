@@ -1,11 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TOOL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIGURE_SCRIPT="$TOOL_ROOT/scripts/configure-gh-env.sh"
-WORKFLOW_SCRIPT="$TOOL_ROOT/scripts/setup-gha.sh"
-GITLAB_SETUP_SCRIPT="$TOOL_ROOT/scripts/setup-gitlab-project.sh"
+# Find the scripts directory - check multiple locations
+find_scripts_dir() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+  # 1. Check relative to the script (for development / running from repo)
+  if [[ -d "$script_dir/../scripts" ]]; then
+    echo "$(cd "$script_dir/.." && pwd)/scripts"
+    return 0
+  fi
+
+  # 2. Check ~/.gh-mirror/scripts (standard install location)
+  if [[ -d "$HOME/.gh-mirror/scripts" ]]; then
+    echo "$HOME/.gh-mirror/scripts"
+    return 0
+  fi
+
+  # 3. Check GH_MIRROR_HOME if set
+  if [[ -n "${GH_MIRROR_HOME:-}" && -d "$GH_MIRROR_HOME/scripts" ]]; then
+    echo "$GH_MIRROR_HOME/scripts"
+    return 0
+  fi
+
+  return 1
+}
+
+SCRIPTS_DIR="$(find_scripts_dir)" || SCRIPTS_DIR=""
+CONFIGURE_SCRIPT="$SCRIPTS_DIR/configure-gh-env.sh"
+WORKFLOW_SCRIPT="$SCRIPTS_DIR/setup-gha.sh"
+GITLAB_SETUP_SCRIPT="$SCRIPTS_DIR/setup-gitlab-project.sh"
 
 # Global options
 AUTO_MODE=false
@@ -16,10 +41,10 @@ MIRROR_ALL_BRANCHES=true
 
 print_help() {
   cat <<'EOF'
-gh-mirror - configure GitHub → GitLab mirroring for the current repository.
+ghmirror - configure GitHub → GitLab mirroring for the current repository.
 
 Usage:
-  gh-mirror [options] [command]
+  ghmirror [options] [command]
 
 Commands:
   setup, full       Run complete setup (secrets + GitLab project + workflow)
@@ -41,25 +66,40 @@ Environment variables:
   GITLAB_HOST       GitLab instance hostname
 
 Examples:
-  gh-mirror                           # Interactive setup
-  gh-mirror --auto                    # Fully automated setup
-  gh-mirror --auto --namespace myorg  # Auto setup to specific GitLab group
-  gh-mirror init                      # Push all branches/tags to GitLab now
+  ghmirror                           # Interactive setup
+  ghmirror --auto                    # Fully automated setup
+  ghmirror --auto --namespace myorg  # Auto setup to specific GitLab group
+  ghmirror init                      # Push all branches/tags to GitLab now
 
-You must execute gh-mirror from inside the GitHub repository you want to mirror.
+You must execute ghmirror from inside the GitHub repository you want to mirror.
 EOF
 }
 
 ensure_dependency_scripts() {
+  if [[ -z "$SCRIPTS_DIR" ]]; then
+    cat >&2 <<'EOF'
+Error: Could not find ghmirror scripts directory.
+Looked in:
+  - Relative to ghmirror binary (../scripts/)
+  - ~/.gh-mirror/scripts/
+  - $GH_MIRROR_HOME/scripts/
+
+Reinstall with:
+  curl -fsSL https://raw.githubusercontent.com/hjoncour/gh-mirror/master/install.sh | bash
+EOF
+    exit 1
+  fi
+
   local missing=()
   [[ ! -x "$CONFIGURE_SCRIPT" ]] && missing+=("configure-gh-env.sh")
   [[ ! -x "$WORKFLOW_SCRIPT" ]] && missing+=("setup-gha.sh")
   [[ ! -x "$GITLAB_SETUP_SCRIPT" ]] && missing+=("setup-gitlab-project.sh")
 
   if [[ ${#missing[@]} -gt 0 ]]; then
-    cat >&2 <<'EOF'
-Error: required helper scripts not found. Reinstall gh-mirror with the installer:
-  curl -fsSL https://raw.githubusercontent.com/hjoncour/gh-to-gl-migrator/master/install.sh | bash
+    cat >&2 <<EOF
+Error: Missing helper scripts in $SCRIPTS_DIR: ${missing[*]}
+Reinstall with:
+  curl -fsSL https://raw.githubusercontent.com/hjoncour/gh-mirror/master/install.sh | bash
 EOF
     exit 1
   fi
@@ -67,7 +107,7 @@ EOF
 
 ensure_git_repo() {
   if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "Error: gh-mirror must be run inside a Git repository." >&2
+    echo "Error: ghmirror must be run inside a Git repository." >&2
     exit 1
   fi
 }
@@ -282,7 +322,7 @@ main() {
         run_workflow
         echo
         echo "Setup complete! To perform initial mirror now, run:"
-        echo "  gh-mirror init"
+        echo "  ghmirror init"
       fi
       ;;
     *)

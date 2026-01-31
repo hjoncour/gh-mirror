@@ -1,11 +1,11 @@
-# gh-to-gl-migrator
+# gh-mirror
 
 Automation helpers for mirroring a GitHub repository to GitLab. The toolkit
 provides:
 
-- `gh-mirror`: a CLI that guides you through configuring GitHub secrets,
+- `ghmirror`: a CLI that guides you through configuring GitHub secrets,
   GitLab credentials, and the GitHub Actions workflow that performs the mirror.
-- `install.sh`: a curl-friendly installer that publishes `gh-mirror` onto your
+- `install.sh`: a curl-friendly installer that publishes `ghmirror` onto your
   `PATH` so the tool can be launched from any repository.
 
 ## Features
@@ -30,13 +30,13 @@ provides:
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hjoncour/gh-to-gl-migrator/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hjoncour/gh-mirror/master/install.sh | bash
 ```
 
 Defaults:
 
 - Installs the helper scripts into `~/.gh-mirror`.
-- Publishes `gh-mirror` to `~/.local/bin`.
+- Publishes `ghmirror` to `~/.local/bin`.
 
 If `~/.local/bin` is not already on your `PATH`, add it (for example):
 
@@ -52,16 +52,16 @@ Override installer behaviour with environment variables:
 | Variable               | Purpose                                              | Default                               |
 | ---------------------- | ---------------------------------------------------- | ------------------------------------- |
 | `GH_MIRROR_REPO_OWNER` | Repository owner                                     | `hjoncour`                            |
-| `GH_MIRROR_REPO_NAME`  | Repository name                                      | `gh-to-gl-migrator`                   |
+| `GH_MIRROR_REPO_NAME`  | Repository name                                      | `gh-mirror`                           |
 | `GH_MIRROR_REPO_REF`   | Branch/ref to download                               | `main` (falls back to `master` etc.)  |
 | `GH_MIRROR_HOME`       | Directory where scripts are staged                   | `~/.gh-mirror`                        |
-| `GH_MIRROR_BIN`        | Directory where the `gh-mirror` executable is copied | `~/.local/bin`                        |
+| `GH_MIRROR_BIN`        | Directory where the `ghmirror` executable is copied  | `~/.local/bin`                        |
 | `GH_MIRROR_TARBALL`    | Custom tarball URL (skips ref detection)             | _blank_                               |
 
 Example (install into `/usr/local/bin`):
 
 ```bash
-GH_MIRROR_BIN=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/hjoncour/gh-to-gl-migrator/master/install.sh | sudo bash
+GH_MIRROR_BIN=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/hjoncour/gh-mirror/master/install.sh | sudo bash
 ```
 
 ## Usage
@@ -71,7 +71,7 @@ GH_MIRROR_BIN=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/hjonco
 From the GitHub repository you want to mirror:
 
 ```bash
-gh-mirror
+ghmirror
 ```
 
 The command walks through:
@@ -91,25 +91,25 @@ For CI/CD pipelines or scripted deployments:
 export GITLAB_TOKEN="glpat-xxxxxxxxxxxx"
 
 # Run fully automated setup (creates GitLab project, configures secrets, generates workflow)
-gh-mirror --auto
+ghmirror --auto
 
 # Or specify a different GitLab namespace
-gh-mirror --auto --namespace my-gitlab-group
+ghmirror --auto --namespace my-gitlab-group
 
 # Or use a self-hosted GitLab instance
-gh-mirror --auto --host gitlab.mycompany.com --namespace team
+ghmirror --auto --host gitlab.mycompany.com --namespace team
 ```
 
 ### Commands
 
-| Command                   | Description                                           |
-| ------------------------- | ----------------------------------------------------- |
-| `gh-mirror`               | Full setup (secrets + GitLab project + workflow)      |
-| `gh-mirror configure`     | Only configure GitHub secrets/variables               |
-| `gh-mirror workflow`      | Only generate the GitHub Actions workflow             |
-| `gh-mirror gitlab-setup`  | Only create/configure the GitLab project              |
-| `gh-mirror init`          | Push all branches and tags to GitLab now              |
-| `gh-mirror help`          | Show usage information                                |
+| Command                  | Description                                           |
+| ------------------------ | ----------------------------------------------------- |
+| `ghmirror`               | Full setup (secrets + GitLab project + workflow)      |
+| `ghmirror configure`     | Only configure GitHub secrets/variables               |
+| `ghmirror workflow`      | Only generate the GitHub Actions workflow             |
+| `ghmirror gitlab-setup`  | Only create/configure the GitLab project              |
+| `ghmirror init`          | Push all branches and tags to GitLab now              |
+| `ghmirror help`          | Show usage information                                |
 
 ### Options
 
@@ -176,13 +176,13 @@ jobs:
 ## Updating
 
 Re-run the installer. It will download the latest scripts and overwrite the
-existing `gh-mirror` binary.
+existing `ghmirror` binary.
 
 ## Uninstall
 
 ```bash
 rm -rf ~/.gh-mirror
-rm -f ~/.local/bin/gh-mirror
+rm -f ~/.local/bin/ghmirror
 ```
 
 Remove any `PATH` additions you created during installation.

@@ -2,14 +2,14 @@
 set -euo pipefail
 
 REPO_OWNER="${GH_MIRROR_REPO_OWNER:-hjoncour}"
-REPO_NAME="${GH_MIRROR_REPO_NAME:-gh-to-gl-migrator}"
+REPO_NAME="${GH_MIRROR_REPO_NAME:-gh-mirror}"
 REPO_REF="${GH_MIRROR_REPO_REF:-main}"
 REPO_URL="${GH_MIRROR_REPO:-https://github.com/${REPO_OWNER}/${REPO_NAME}}"
 CUSTOM_TARBALL="${GH_MIRROR_TARBALL:-}"
 INSTALL_ROOT="${GH_MIRROR_HOME:-$HOME/.gh-mirror}"
 BIN_DIR="${GH_MIRROR_BIN:-$HOME/.local/bin}"
 
-echo "gh-mirror installer"
+echo "ghmirror installer"
 if [[ -n "$CUSTOM_TARBALL" ]]; then
   echo "Source repository : $REPO_URL (custom tarball)"
 else
@@ -80,16 +80,16 @@ cp -R "$SRC_DIR/bin" "$INSTALL_ROOT/"
 # Ensure helper scripts are executable.
 find "$INSTALL_ROOT" -type f -name "*.sh" -exec chmod +x {} \;
 
-echo "Publishing gh-mirror command to $BIN_DIR..."
-install -m 0755 "$INSTALL_ROOT/bin/gh-mirror" "$BIN_DIR/gh-mirror"
+echo "Publishing ghmirror command to $BIN_DIR..."
+install -m 0755 "$INSTALL_ROOT/bin/ghmirror" "$BIN_DIR/ghmirror"
 
 echo
-echo "gh-mirror installed successfully."
+echo "ghmirror installed successfully."
 echo "Ensure $BIN_DIR is on your PATH. Example:"
 echo "  export PATH=\"$BIN_DIR:\$PATH\""
 echo
 echo "Usage:"
-echo "  gh-mirror           # run full setup (secrets + workflow) in the current repo"
-echo "  gh-mirror configure # only configure GitHub secrets/variables"
-echo "  gh-mirror workflow  # only scaffold/update the workflow file"
-
+echo "  ghmirror           # run full setup (secrets + workflow) in the current repo"
+echo "  ghmirror configure # only configure GitHub secrets/variables"
+echo "  ghmirror workflow  # only scaffold/update the workflow file"
+echo "  ghmirror --auto    # fully automated setup (requires GITLAB_TOKEN env var)"
