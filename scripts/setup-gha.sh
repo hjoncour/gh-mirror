@@ -5,6 +5,18 @@ ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 WORKFLOW_DIR="$ROOT_DIR/.github/workflows"
 WORKFLOW_PATH="$WORKFLOW_DIR/mirror-to-gitlab.yaml"
 
+# Environment variables for auto mode
+AUTO_MODE="${AUTO_MODE:-false}"
+FEATURE_POLICY="${FEATURE_POLICY:-}"  # always or keyword
+GITLAB_REPO="${GITLAB_REPO:-}"
+
+# Parse --auto flag
+for arg in "$@"; do
+  case "$arg" in
+    --auto|-y) AUTO_MODE=true ;;
+  esac
+done
+
 ask_yes_no() {
   local prompt="$1" response lowered
   while true; do
@@ -105,7 +117,15 @@ echo "Configure GitHub Actions workflow to mirror default branch to GitLab."
 default_branch="$(determine_default_branch)"
 gitlab_repo=""
 
-if ask_yes_no "Do you already have a target GitLab repository"; then
+# In auto mode, use provided GITLAB_REPO or skip interactive prompts
+if [[ "$AUTO_MODE" == "true" ]]; then
+  if [[ -n "$GITLAB_REPO" ]]; then
+    gitlab_repo="$(normalize_gitlab_repo "$GITLAB_REPO")"
+    echo "Using GitLab repository: $gitlab_repo"
+  else
+    echo "Note: GITLAB_REPO not provided; workflow will use vars.GITLAB_REPO from GitHub Actions."
+  fi
+elif ask_yes_no "Do you already have a target GitLab repository"; then
   read -r -p "Enter GitLab repository (gitlab.com/<namespace>/<repo>[.git] or https URL): " gitlab_repo_input
   gitlab_repo="$(normalize_gitlab_repo "$gitlab_repo_input")"
 else
@@ -167,10 +187,18 @@ else
 fi
 
 echo "Default behaviour: default branch pushes always mirror to GitLab."
-feature_policy="always"
+feature_policy="${FEATURE_POLICY:-always}"
 keyword_input=""
 feature_behavior_comment="Non-default branch pushes (PR commits): mirror immediately with no keyword."
-if ask_yes_no "Mirror non-default branch pushes automatically (i.e., every commit pushed to PR/feature branches mirrors to GitLab)"; then
+
+# In auto mode, use provided FEATURE_POLICY (defaults to 'always')
+if [[ "$AUTO_MODE" == "true" ]]; then
+  echo "Feature branch policy: $feature_policy"
+  if [[ "$feature_policy" == "keyword" ]]; then
+    keyword_input="${OVERRIDE_KEYWORD:-SYNC_TO_GITLAB}"
+    feature_behavior_comment="Non-default branch pushes (PR commits): mirror only when commit message contains \"${keyword_input}\" so you can opt-in per push."
+  fi
+elif ask_yes_no "Mirror non-default branch pushes automatically (i.e., every commit pushed to PR/feature branches mirrors to GitLab)"; then
   feature_policy="always"
   feature_behavior_comment="Non-default branch pushes (PR commits): mirror immediately with no keyword."
 else
@@ -194,10 +222,22 @@ if [[ "$feature_policy" == "keyword" ]]; then
   override_comment="- Non-default branch pushes (PR commits): mirror only when commit message contains \"${keyword_input}\"; lets you opt-in per push."
   keyword_detail_comment="- Opt-in keyword currently required: \"${keyword_input}\"."
   yaml_keyword="\"${escaped_keyword}\""
+  # For keyword policy: run on default branch OR when keyword found in commit message
+  job_if_condition="github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'push' &&
+        (
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
+          (github.event.head_commit != null && contains(github.event.head_commit.message, '${escaped_keyword}')) ||
+          (github.event.commits != null && contains(join(github.event.commits.*.message, ' '), '${escaped_keyword}'))
+        )
+      )"
 else
   override_comment="- Non-default branch pushes (PR commits): mirror immediately like default branch pushes (no keyword required)."
   keyword_detail_comment="- Opt-in keyword disabled (all feature pushes mirror automatically)."
   yaml_keyword='""'
+  # For always policy: run on any push
+  job_if_condition="github.event_name == 'workflow_dispatch' || github.event_name == 'push'"
 fi
 
 cat >"$WORKFLOW_PATH" <<EOF
@@ -236,22 +276,7 @@ jobs:
     runs-on: ubuntu-latest
     # Gate: allow manual runs, always run for default-branch pushes, and conditionally mirror feature branches per policy.
     if: >
-      \${{ github.event_name == 'workflow_dispatch' ||
-          (
-            github.event_name == 'push' &&
-            (
-              endsWith(github.ref, format('/{0}', env.DEFAULT_BRANCH)) ||
-              env.FEATURE_PUSH_POLICY == 'always' ||
-              (
-                env.FEATURE_PUSH_POLICY == 'keyword' &&
-                env.OVERRIDE_KEYWORD != '' &&
-                (
-                  (github.event.head_commit != null && contains(github.event.head_commit.message, env.OVERRIDE_KEYWORD)) ||
-                  (github.event.commits != null && contains(join(github.event.commits.*.message, ' '), env.OVERRIDE_KEYWORD))
-                )
-              )
-            )
-          ) }}
+      ${job_if_condition}
 
     steps:
       # Fetch entire history and tags so force pushes mirror the complete state.
@@ -301,6 +326,20 @@ jobs:
           echo "Overwriting gitlab:\$REMOTE_HEAD from origin/\$DEFAULT_BRANCH (HARD FORCE)"
           echo "(Ensure GitLab Protected Branch allows Force push — you already enabled it.)"
           git push --force gitlab "refs/remotes/origin/\${DEFAULT_BRANCH}:refs/heads/\${REMOTE_HEAD}"
+
+      # If this push is on a non-default branch (feature/PR branch), mirror that branch too.
+      - name: FORCE push current branch (if not default)
+        env:
+          DEFAULT_BRANCH: \${{ env.DEFAULT_BRANCH }}
+        run: |
+          set -euo pipefail
+          CURRENT_BRANCH="\${GITHUB_REF#refs/heads/}"
+          if [[ "\$CURRENT_BRANCH" != "\$DEFAULT_BRANCH" ]]; then
+            echo "Mirroring feature branch: \$CURRENT_BRANCH"
+            git push --force gitlab "refs/remotes/origin/\${CURRENT_BRANCH}:refs/heads/\${CURRENT_BRANCH}"
+          else
+            echo "Current branch is default branch; already mirrored above."
+          fi
 
       # Keep release tags in sync by force pushing them as well.
       - name: FORCE push tags
