@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_OWNER="${GH_MIRROR_REPO_OWNER:-Santeau}"
+REPO_OWNER="${GH_MIRROR_REPO_OWNER:-hjoncour}"
 REPO_NAME="${GH_MIRROR_REPO_NAME:-gh-to-gl-migrator}"
 REPO_REF="${GH_MIRROR_REPO_REF:-main}"
 REPO_URL="${GH_MIRROR_REPO:-https://github.com/${REPO_OWNER}/${REPO_NAME}}"
-TARBALL_URL="${GH_MIRROR_TARBALL:-${REPO_URL}/archive/refs/heads/${REPO_REF}.tar.gz}"
+CUSTOM_TARBALL="${GH_MIRROR_TARBALL:-}"
 INSTALL_ROOT="${GH_MIRROR_HOME:-$HOME/.gh-mirror}"
 BIN_DIR="${GH_MIRROR_BIN:-$HOME/.local/bin}"
 
 echo "gh-mirror installer"
-echo "Source repository : $REPO_URL (@ $REPO_REF)"
+if [[ -n "$CUSTOM_TARBALL" ]]; then
+  echo "Source repository : $REPO_URL (custom tarball)"
+else
+  echo "Source repository : $REPO_URL (@ $REPO_REF)"
+fi
 echo "Install location  : $INSTALL_ROOT"
 echo "Binary directory  : $BIN_DIR"
 
@@ -20,13 +24,51 @@ mkdir -p "$BIN_DIR"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "Downloading latest sources..."
-curl -fsSL "$TARBALL_URL" | tar -xz -C "$TMP_DIR"
+download_and_extract() {
+  local ref="$1" url="$2"
+  rm -rf "$TMP_DIR"/*
+  echo "Downloading sources from $url"
+  if curl -fsSL "$url" -o "$TMP_DIR/source.tar.gz"; then
+    tar -xz -C "$TMP_DIR" -f "$TMP_DIR/source.tar.gz"
+    local extracted
+    extracted="$(find "$TMP_DIR" -maxdepth 1 -type d -name "${REPO_NAME}-*" | head -n1)"
+    if [[ -n "$extracted" ]]; then
+      SRC_DIR="$extracted"
+      REPO_REF="$ref"
+      return 0
+    fi
+  fi
+  return 1
+}
 
-SRC_DIR="$(find "$TMP_DIR" -maxdepth 1 -type d -name "${REPO_NAME}-*" | head -n1)"
-if [[ -z "$SRC_DIR" ]]; then
-  echo "Error: failed to locate extracted repository contents." >&2
-  exit 1
+SRC_DIR=""
+
+if [[ -n "$CUSTOM_TARBALL" ]]; then
+  if ! download_and_extract "$REPO_REF" "$CUSTOM_TARBALL"; then
+    echo "Error: failed to download custom tarball $CUSTOM_TARBALL" >&2
+    exit 1
+  fi
+else
+  refs_to_try=("$REPO_REF")
+  if [[ "$REPO_REF" != "main" ]]; then
+    refs_to_try+=("main")
+  fi
+  if [[ "$REPO_REF" != "master" ]]; then
+    refs_to_try+=("master")
+  fi
+
+  for ref in "${refs_to_try[@]}"; do
+    if download_and_extract "$ref" "${REPO_URL}/archive/refs/heads/${ref}.tar.gz"; then
+      break
+    else
+      echo "Warning: could not download ref '$ref' from ${REPO_URL}."
+    fi
+  done
+
+  if [[ -z "$SRC_DIR" ]]; then
+    echo "Error: unable to download repository tarball from $REPO_URL (tried refs: ${refs_to_try[*]})." >&2
+    exit 1
+  fi
 fi
 
 echo "Installing helper scripts into $INSTALL_ROOT..."

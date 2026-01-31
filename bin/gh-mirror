@@ -5,26 +5,61 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIGURE_SCRIPT="$TOOL_ROOT/scripts/configure-gh-env.sh"
 WORKFLOW_SCRIPT="$TOOL_ROOT/scripts/setup-gha.sh"
+GITLAB_SETUP_SCRIPT="$TOOL_ROOT/scripts/setup-gitlab-project.sh"
+
+# Global options
+AUTO_MODE=false
+GITLAB_TOKEN="${GITLAB_TOKEN:-}"
+GITLAB_NAMESPACE="${GITLAB_NAMESPACE:-}"
+GITLAB_HOST="${GITLAB_HOST:-gitlab.com}"
+MIRROR_ALL_BRANCHES=true
 
 print_help() {
   cat <<'EOF'
 gh-mirror - configure GitHub → GitLab mirroring for the current repository.
 
 Usage:
-  gh-mirror             # run both configuration helpers (secrets + workflow)
-  gh-mirror configure   # only run GitHub secrets/variables setup
-  gh-mirror workflow    # only generate/update the GitHub Actions workflow
-  gh-mirror help        # show this help
+  gh-mirror [options] [command]
+
+Commands:
+  setup, full       Run complete setup (secrets + GitLab project + workflow)
+  configure         Only run GitHub secrets/variables setup
+  workflow          Only generate/update the GitHub Actions workflow
+  gitlab-setup      Only create/configure the GitLab project
+  init              Initial full mirror (push all branches and tags now)
+  help              Show this help
+
+Options:
+  --auto, -y        Non-interactive mode (auto-detect settings from GitHub repo)
+  --token TOKEN     GitLab personal access token (or set GITLAB_TOKEN env var)
+  --namespace NS    GitLab namespace/group (default: same as GitHub owner)
+  --host HOST       GitLab host (default: gitlab.com)
+
+Environment variables:
+  GITLAB_TOKEN      GitLab personal access token
+  GITLAB_NAMESPACE  Target GitLab namespace (group or username)
+  GITLAB_HOST       GitLab instance hostname
+
+Examples:
+  gh-mirror                           # Interactive setup
+  gh-mirror --auto                    # Fully automated setup
+  gh-mirror --auto --namespace myorg  # Auto setup to specific GitLab group
+  gh-mirror init                      # Push all branches/tags to GitLab now
 
 You must execute gh-mirror from inside the GitHub repository you want to mirror.
 EOF
 }
 
 ensure_dependency_scripts() {
-  if [[ ! -x "$CONFIGURE_SCRIPT" ]] || [[ ! -x "$WORKFLOW_SCRIPT" ]]; then
+  local missing=()
+  [[ ! -x "$CONFIGURE_SCRIPT" ]] && missing+=("configure-gh-env.sh")
+  [[ ! -x "$WORKFLOW_SCRIPT" ]] && missing+=("setup-gha.sh")
+  [[ ! -x "$GITLAB_SETUP_SCRIPT" ]] && missing+=("setup-gitlab-project.sh")
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
     cat >&2 <<'EOF'
 Error: required helper scripts not found. Reinstall gh-mirror with the installer:
-  curl -fsSL https://raw.githubusercontent.com/Santeau/gh-to-gl-migrator/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/hjoncour/gh-to-gl-migrator/master/install.sh | bash
 EOF
     exit 1
   fi
@@ -37,42 +72,221 @@ ensure_git_repo() {
   fi
 }
 
+ensure_gh_cli() {
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "Error: GitHub CLI (gh) not found. Install it from https://cli.github.com" >&2
+    exit 1
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "Error: GitHub CLI not authenticated. Run 'gh auth login' first." >&2
+    exit 1
+  fi
+}
+
+# Get GitHub repo info
+get_github_info() {
+  local json
+  json=$(gh repo view --json name,owner,description,visibility,defaultBranchRef 2>/dev/null) || {
+    echo "Error: Could not get GitHub repository info. Are you in a GitHub repo?" >&2
+    return 1
+  }
+
+  GITHUB_REPO_NAME=$(echo "$json" | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+  GITHUB_OWNER=$(echo "$json" | grep -o '"login":"[^"]*"' | cut -d'"' -f4)
+  GITHUB_DESCRIPTION=$(echo "$json" | grep -o '"description":"[^"]*"' | cut -d'"' -f4 || echo "")
+  GITHUB_VISIBILITY=$(echo "$json" | grep -o '"visibility":"[^"]*"' | cut -d'"' -f4 | tr '[:upper:]' '[:lower:]')
+  GITHUB_DEFAULT_BRANCH=$(echo "$json" | grep -o '"defaultBranchRef":{[^}]*"name":"[^"]*"' | grep -o '"name":"[^"]*"' | cut -d'"' -f4)
+
+  # Map GitHub visibility to GitLab
+  case "$GITHUB_VISIBILITY" in
+    public) GITLAB_VISIBILITY="public" ;;
+    private) GITLAB_VISIBILITY="private" ;;
+    internal) GITLAB_VISIBILITY="internal" ;;
+    *) GITLAB_VISIBILITY="private" ;;
+  esac
+
+  export GITHUB_REPO_NAME GITHUB_OWNER GITHUB_DESCRIPTION GITHUB_VISIBILITY GITHUB_DEFAULT_BRANCH GITLAB_VISIBILITY
+}
+
 run_configure() {
   echo "=== GitHub environment setup (secrets & variables) ==="
-  bash "$CONFIGURE_SCRIPT"
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    AUTO_MODE=true GITLAB_TOKEN="$GITLAB_TOKEN" \
+      GITLAB_REPO="${GITLAB_HOST}/${GITLAB_NAMESPACE:-$GITHUB_OWNER}/${GITHUB_REPO_NAME}.git" \
+      bash "$CONFIGURE_SCRIPT" --auto
+  else
+    bash "$CONFIGURE_SCRIPT"
+  fi
+}
+
+run_gitlab_setup() {
+  echo "=== GitLab project setup ==="
+
+  local args=()
+  [[ "$AUTO_MODE" == "true" ]] && args+=(--auto)
+  [[ -n "$GITLAB_TOKEN" ]] && args+=(--token "$GITLAB_TOKEN")
+  [[ -n "$GITLAB_HOST" ]] && args+=(--host "$GITLAB_HOST")
+
+  # Use GitHub owner as default namespace if not specified
+  local namespace="${GITLAB_NAMESPACE:-$GITHUB_OWNER}"
+  args+=(--namespace "$namespace")
+  args+=(--name "$GITHUB_REPO_NAME")
+  args+=(--description "$GITHUB_DESCRIPTION")
+  args+=(--visibility "$GITLAB_VISIBILITY")
+  args+=(--default-branch "$GITHUB_DEFAULT_BRANCH")
+
+  bash "$GITLAB_SETUP_SCRIPT" "${args[@]}"
 }
 
 run_workflow() {
   echo "=== GitHub Actions workflow setup ==="
-  bash "$WORKFLOW_SCRIPT"
+  if [[ "$AUTO_MODE" == "true" ]]; then
+    AUTO_MODE=true FEATURE_POLICY=always \
+      GITLAB_REPO="${GITLAB_HOST}/${GITLAB_NAMESPACE:-$GITHUB_OWNER}/${GITHUB_REPO_NAME}.git" \
+      bash "$WORKFLOW_SCRIPT" --auto
+  else
+    bash "$WORKFLOW_SCRIPT"
+  fi
+}
+
+run_initial_mirror() {
+  echo "=== Initial full mirror to GitLab ==="
+
+  local gitlab_repo="${GITLAB_HOST}/${GITLAB_NAMESPACE:-$GITHUB_OWNER}/${GITHUB_REPO_NAME}.git"
+
+  if [[ -z "$GITLAB_TOKEN" ]]; then
+    # Try to get from gh secrets (won't work, but try)
+    read -r -s -p "Enter GitLab token for initial push: " GITLAB_TOKEN
+    echo
+  fi
+
+  echo "Adding GitLab remote..."
+  git remote remove gitlab 2>/dev/null || true
+  git remote add gitlab "https://oauth2:${GITLAB_TOKEN}@${gitlab_repo}"
+
+  echo "Fetching all branches and tags..."
+  git fetch --all --prune --tags
+
+  echo "Pushing all branches to GitLab..."
+  # Push all local tracking branches
+  git push --force --all gitlab
+
+  echo "Pushing all tags to GitLab..."
+  git push --force --tags gitlab
+
+  echo "Initial mirror complete!"
+  echo "GitLab repository: https://${gitlab_repo%.git}"
+
+  # Clean up remote with token
+  git remote remove gitlab
+  echo "Note: GitLab remote removed (workflow will use secrets for future pushes)"
+}
+
+parse_args() {
+  local positional=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --auto|-y)
+        AUTO_MODE=true
+        shift
+        ;;
+      --token)
+        GITLAB_TOKEN="$2"
+        shift 2
+        ;;
+      --namespace)
+        GITLAB_NAMESPACE="$2"
+        shift 2
+        ;;
+      --host)
+        GITLAB_HOST="$2"
+        shift 2
+        ;;
+      --help|-h)
+        print_help
+        exit 0
+        ;;
+      -*)
+        echo "Unknown option: $1" >&2
+        print_help >&2
+        exit 1
+        ;;
+      *)
+        positional+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  # Restore positional parameters
+  set -- "${positional[@]:-}"
+  ACTION="${1:-full}"
 }
 
 main() {
-  local action="${1:-full}"
+  parse_args "$@"
 
-  case "$action" in
-    help|-h|--help)
+  case "$ACTION" in
+    help)
       print_help
       return 0
       ;;
     configure|config)
       ensure_dependency_scripts
       ensure_git_repo
+      ensure_gh_cli
+      get_github_info
       run_configure
       ;;
     workflow|gha|workflow-only)
       ensure_dependency_scripts
       ensure_git_repo
+      ensure_gh_cli
+      get_github_info
       run_workflow
+      ;;
+    gitlab-setup|gitlab)
+      ensure_dependency_scripts
+      ensure_git_repo
+      ensure_gh_cli
+      get_github_info
+      run_gitlab_setup
+      ;;
+    init|initial|mirror-now)
+      ensure_git_repo
+      ensure_gh_cli
+      get_github_info
+      run_initial_mirror
       ;;
     full|setup|all|"")
       ensure_dependency_scripts
       ensure_git_repo
-      run_configure
-      run_workflow
+      ensure_gh_cli
+      get_github_info
+
+      echo "GitHub repo: ${GITHUB_OWNER}/${GITHUB_REPO_NAME}"
+      echo "Default branch: ${GITHUB_DEFAULT_BRANCH}"
+      echo "Visibility: ${GITHUB_VISIBILITY} → ${GITLAB_VISIBILITY}"
+      echo "Target GitLab: ${GITLAB_HOST}/${GITLAB_NAMESPACE:-$GITHUB_OWNER}/${GITHUB_REPO_NAME}"
+      echo
+
+      if [[ "$AUTO_MODE" == "true" ]]; then
+        echo "Running in auto mode..."
+        run_gitlab_setup
+        run_configure
+        run_workflow
+        run_initial_mirror
+      else
+        run_configure
+        run_workflow
+        echo
+        echo "Setup complete! To perform initial mirror now, run:"
+        echo "  gh-mirror init"
+      fi
       ;;
     *)
-      echo "Unknown action: $action" >&2
+      echo "Unknown action: $ACTION" >&2
       print_help >&2
       exit 1
       ;;
@@ -80,4 +294,3 @@ main() {
 }
 
 main "$@"
-
